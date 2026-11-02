@@ -13,7 +13,7 @@ import time
 import unicodedata
 from urllib.parse import urlparse
 
-from .model import plan_goal, validate_choice
+from .model import plan_goal, post_json, validate_choice
 
 DEFAULT_MODEL = "aac6fef/laya-typed-decisions-mlx"
 FIELD_ROLES = {"combobox", "textbox", "searchbox", "spinbutton", "checkbox", "radio", "switch"}
@@ -38,13 +38,36 @@ MAX_RESULT_WAITS = 12  # about 2 s of observation while submitted results load
 _MODEL = None
 
 
+class RemoteLaya:
+    """Laya served over HTTP (e.g. `laya-serve` on a CUDA box): POST {model, state, questions} to /v1/systemone."""
+
+    def __init__(self, endpoint, key=None, model=None):
+        endpoint = endpoint.rstrip("/")
+        self.url = endpoint if endpoint.endswith("/systemone") else endpoint + "/v1/systemone"
+        self.key, self.model = key or "local", model
+
+    def system_one(self, state, questions):
+        body = {"state": state, "questions": questions}
+        if self.model:
+            body["model"] = self.model
+        return post_json(self.url, self.key, body)
+
+
 def laya():
-    """Load once per process. The first forward pass also compiles Metal kernels, so warm it here."""
+    """Load once per process. LAYA_ENDPOINT selects a remote server; otherwise load laya-mlx (Apple Silicon)
+    and warm it, since the first forward pass compiles Metal kernels."""
     global _MODEL
     if _MODEL is None:
-        import laya_mlx
+        endpoint = os.environ.get("LAYA_ENDPOINT")
+        if endpoint:
+            _MODEL = RemoteLaya(endpoint, os.environ.get("LAYA_API_KEY"), os.environ.get("LAYA_REMOTE_MODEL"))
+        else:
+            try:
+                import laya_mlx
+            except ImportError:
+                raise RuntimeError("laya-mlx is not installed (Apple Silicon only); set LAYA_ENDPOINT.") from None
 
-        _MODEL = laya_mlx.load(os.environ.get("LAYA_MODEL", DEFAULT_MODEL))
+            _MODEL = laya_mlx.load(os.environ.get("LAYA_MODEL", DEFAULT_MODEL))
         _MODEL.system_one("Warm up.", {"q": {"type": "choice", "instructions": "Warm up.", "criteria": ["a", "b"]}})
     return _MODEL
 
